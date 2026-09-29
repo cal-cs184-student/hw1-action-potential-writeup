@@ -334,7 +334,7 @@
 			<code>get_level</code> I take the \((u,v)\) differences to the neighboring screen pixels in x and
 			y, scale them by the texture dimensions to get the footprint in <b>texels</b>, and compute
 		</p>
-		\[ L = \log_2\Big(\max\big(\big\| \tfrac{\partial (u,v)}{\partial x}\big\|,\ \big\| \tfrac{\partial (u,v)}{\partial y}\big\|\big)\Big) \]
+		\[ L = \log_2\Big(\max\big(\big\| \frac{\partial (u,v)}{\partial x}\big\|,\ \big\| \frac{\partial (u,v)}{\partial y}\big\|\big)\Big) \]
 		<p>
 			From there I support three level-sampling modes. <code>L_ZERO</code> always samples the
 			full-resolution level 0, <code>L_NEAREST</code> rounds \(L\) to the nearest integer level, and

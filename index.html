@@ -90,10 +90,11 @@
 		<p>
 			whose sign tells me which side of the edge a point is on. I loop over every pixel in the bounding
 			box, evaluate the three edge functions at the pixel center \((x+0.5, y+0.5)\), and fill the pixel
-			if it lands on the inside (non-negative) side of all three edges at once. To keep the tie cases
-			consistent I canonicalize each edge's orientation in <code>make_edge</code> by always ordering
-			the endpoints the same way and flipping a stored <code>sign</code>. This is what stops adjacent
-			triangles from either double-drawing or leaving gaps along a shared edge.
+			if it lands on the inside (non-negative) side of all three edges at once. To keep ties consistent I
+			canonicalize each edge in <code>make_edge</code> so that two triangles sharing an edge compute the
+			exact same edge value at every sample. That keeps shared edges free of gaps. I did not implement the
+			top-left rule, and my test counts samples on an edge as inside, so a sample that lands exactly on a
+			shared edge gets drawn by both triangles. The spec allows this.
 		</p>
 		<p>
 			<b>Why this is no worse than the naive bounding-box approach.</b> The naive version checks every
@@ -113,17 +114,12 @@
 				single-sample coverage).
 			</figcaption>
 		</figure>
-		<p>
-			<b>Extra credit (optimizations):</b> Beyond the clamped bounding-box scan with precomputed edge
-			coefficients, I did not add any further optimizations (for example incremental edge evaluation
-			across a scanline, tiled or hierarchical traversal, or SIMD), so I have no timing table to show.
-		</p>
 
 		<h2>Task 2: Antialiasing by Supersampling</h2>
 		<p>
 			<b>Algorithm and data structures.</b> Supersampling cuts down aliasing by taking more than one
 			sample per pixel and averaging them. The main data structure I use is a <code>sample_buffer</code>
-			of size \(\text{width} \times \text{height} \times \text{sample\_rate}\). Instead of one color per
+			of size \(\text{width} \times \text{height} \times \text{sample rate}\). Instead of one color per
 			pixel, I store <code>sample_rate</code> colors per pixel. For a sample rate \(N\) I treat the pixel
 			as an \(\sqrt{N} \times \sqrt{N}\) grid (<code>sqrt_rate = round(sqrt(sample_rate))</code>) and put
 			one sample at the center of each sub-cell, at offsets \(\big(\frac{s_x + 0.5}{\sqrt N},
@@ -135,7 +131,7 @@
 		<ul>
 			<li>
 				<code>set_sample_rate</code> reallocates the sample buffer to the new
-				\(\text{width}\cdot\text{height}\cdot\text{sample\_rate}\) size whenever the rate changes.
+				\(\text{width}\cdot\text{height}\cdot\text{sample rate}\) size whenever the rate changes.
 			</li>
 			<li>
 				The triangle rasterizer now loops over the \(\sqrt N \times \sqrt N\) sub-samples of each pixel
@@ -148,6 +144,11 @@
 				averages the \(N\) sub-sample colors of each pixel (a box filter) and writes that averaged,
 				clamped color into the final RGB framebuffer.
 			</li>
+			<li>
+				<code>set_framebuffer_target</code> also reallocates the sample buffer to match the new size when
+				the window is resized, and <code>clear_buffers</code> resets every entry of the sample buffer to
+				the background color at the start of each frame so stale samples never leak across redraws.
+			</li>
 		</ul>
 		<p>
 			<b>Why supersampling antialiases.</b> With a single sample per pixel the rasterizer makes a hard
@@ -156,6 +157,13 @@
 			partly covered ends up as a blend of the triangle color and the background, weighted by how much
 			of it is actually covered. That approximates the real area coverage of the pixel, so edges turn
 			into smooth gradients instead of hard steps.
+		</p>
+		<p>
+			In signal-processing terms, averaging \(N\) sub-samples is a box filter over the pixel area applied
+			before the final downsample. It raises the effective sampling rate by a factor of \(\sqrt N\) in
+			each direction, which pushes the aliasing up to higher frequencies rather than removing it outright.
+			That is why a thin enough sliver can still break up even at 16 samples per pixel: it just takes a
+			finer feature to alias than it did at rate 1.
 		</p>
 		<div style="display: flex; flex-direction: column; align-items: center;">
 			<table style="width: 100%; text-align: center; border-collapse: collapse;">
@@ -185,24 +193,25 @@
 			out into a clean taper. More sub-samples just means a finer estimate of coverage and smoother
 			antialiasing, and I pay for it with more computation and memory.
 		</p>
-		<p>
-			<b>Extra credit (alternative antialiasing):</b> I only used grid-based (uniform) supersampling, so
-			I do not have any alternative methods to compare against.
-		</p>
 
 		<h2>Task 3: Transforms</h2>
 		<p>
 			SVG groups (<code>&lt;g&gt;</code>) apply transforms <b>hierarchically</b>, so each group's
-			transform is composed with its parent's and children pick up everything above them in the tree.
-			For <code>my_robot.svg</code> I made cubeman <b>wave hello</b>. Starting from the provided
-			<code>robot.svg</code>, I wrapped the whole right-arm group in a <code>rotate(-75)</code> around the
-			shoulder so the upper arm swings up and out, then added a <code>rotate(30)</code> at the elbow so
-			the forearm cocks to the side, which gives you that classic waving-hand shape. To make him feel a
-			bit more alive I also gave the right leg a small <code>rotate(15)</code> like he is mid-step,
+			transform is composed with its parent's and children pick up everything above them in the tree. One
+			detail that matters here: <code>rotate(a)</code> always turns around the <i>origin of the current
+			coordinate system</i>, not around some arbitrary joint. So to pivot the arm at the shoulder I lean on
+			the parent group's translate. The right arm lives inside <code>&lt;g transform="translate(90 -40)"&gt;</code>,
+			which moves the local origin out to the shoulder, and only then do I apply <code>rotate(-75)</code>.
+			Because that rotation runs in the translated frame, it turns the arm around the shoulder rather than
+			around the body's center. For <code>my_robot.svg</code> I used this to make cubeman <b>wave hello</b>:
+			the <code>rotate(-75)</code> swings the upper arm up and out, and then a nested
+			<code>&lt;g transform="translate(70 0)"&gt;&lt;g transform="rotate(30)"&gt;</code> moves the origin
+			down the arm to the elbow and rotates the forearm about that point, cocking the hand to the side.
+			To add a bit of life I also gave the right leg a small <code>rotate(15)</code> like he is mid-step,
 			recolored the torso and legs blue, and turned the head yellow while leaving the arms red for
-			contrast. All of these came from inserting nested <code>&lt;g transform="..."&gt;</code> elements
-			(translate, rotate, scale) around the existing polygons and letting the hierarchical composition do
-			the work, so rotating a parent group rotates the whole limb as one rigid piece.
+			contrast. Everything is done by nesting <code>&lt;g transform="..."&gt;</code> elements
+			(translate, rotate, scale) around the existing polygons, so rotating a parent group rotates the whole
+			limb as one rigid piece.
 		</p>
 		<figure>
 			<img src="assets/task3_my_robot.png" alt="my_robot.svg rendered" style="width:55%"/>
@@ -235,6 +244,14 @@
 			that vertex's hue and transitions continuously through the middle.
 		</p>
 		<figure>
+			<img src="assets/task4_rgb_triangle.png" alt="RGB triangle" style="width:50%"/>
+			<figcaption>
+				A single triangle with a red, a green, and a blue vertex (my own <code>rgb_triangle.svg</code>).
+				Every interior point's color is its barycentric weights applied to the three vertex colors, so
+				each corner is a pure color and the center is an even mix of all three.
+			</figcaption>
+		</figure>
+		<figure>
 			<img src="assets/task4_test7.png" alt="test7.svg color wheel" style="width:60%"/>
 			<figcaption><code>svg/basic/test7.svg</code> at default viewing parameters, sample rate 1, showing colors interpolated with barycentric coordinates.</figcaption>
 		</figure>
@@ -254,15 +271,19 @@
 		</p>
 		<ul>
 			<li>
-				<b>Nearest</b> (<code>sample_nearest</code>): round \((u,v)\) to the single closest texel and
-				return its color. It is fast but blocky, since neighboring screen pixels can snap to the same
-				texel or jump abruptly to the next one.
+				<b>Nearest</b> (<code>sample_nearest</code>): I scale \((u,v)\) into texel space by multiplying by
+				\((\text{width}-1)\) and \((\text{height}-1)\), add \(0.5\) and floor so the coordinate snaps to
+				the closest texel, clamp the result to the valid texel range so border lookups stay in bounds, and
+				return that texel's color. It is fast but blocky, since neighboring screen pixels can snap to the
+				same texel or jump abruptly to the next one.
 			</li>
 			<li>
-				<b>Bilinear</b> (<code>sample_bilinear</code>): take the four texels around \((u,v)\) and blend
-				them with the fractional offsets \(s, t\). I do two horizontal lerps between the left and right
-				texels, then one vertical lerp between those results, which gives a smooth blend instead of a
-				hard jump.
+				<b>Bilinear</b> (<code>sample_bilinear</code>): I scale \((u,v)\) into texel space the same way,
+				take the lower-left texel \((x_0, y_0)\) as the floor of that coordinate, and use the fractional
+				parts \(s, t\) as blend weights. I fetch the four surrounding texels \((x_0, y_0)\),
+				\((x_0+1, y_0)\), \((x_0, y_0+1)\), \((x_0+1, y_0+1)\), each clamped to the border, then do two
+				horizontal lerps between the left and right texels and one vertical lerp between those results.
+				That gives a smooth blend instead of a hard jump.
 			</li>
 		</ul>
 		<div style="display: flex; flex-direction: column; align-items: center;">
@@ -270,36 +291,37 @@
 			  <tr>
 				<td style="text-align: center;">
 				  <img src="assets/task5_nearest_1.png" width="320px"/>
-				  <figcaption>Nearest sampling, 1 sample/pixel.</figcaption>
+				  <figcaption>Nearest, 1 sample/pixel. texmap/test4.svg, pixel inspector on the striped eye and feathers.</figcaption>
 				</td>
 				<td style="text-align: center;">
 				  <img src="assets/task5_nearest_16.png" width="320px"/>
-				  <figcaption>Nearest sampling, 16 samples/pixel.</figcaption>
+				  <figcaption>Nearest, 16 samples/pixel. texmap/test4.svg, pixel inspector on the striped eye and feathers.</figcaption>
 				</td>
 			  </tr>
 			  <tr>
 				<td style="text-align: center;">
 				  <img src="assets/task5_bilinear_1.png" width="320px"/>
-				  <figcaption>Bilinear sampling, 1 sample/pixel.</figcaption>
+				  <figcaption>Bilinear, 1 sample/pixel. texmap/test4.svg, pixel inspector on the striped eye and feathers.</figcaption>
 				</td>
 				<td style="text-align: center;">
 				  <img src="assets/task5_bilinear_16.png" width="320px"/>
-				  <figcaption>Bilinear sampling, 16 samples/pixel.</figcaption>
+				  <figcaption>Bilinear, 16 samples/pixel. texmap/test4.svg, pixel inspector on the striped eye and feathers.</figcaption>
 				</td>
 			  </tr>
 			</table>
 		</div>
 		<p>
 			<b>Relative differences.</b> Bilinear comes out visibly smoother than nearest, and the gap is
-			clearest at 1 sample per pixel, where nearest shows hard blocky edges and stair-steps along
-			high-contrast texture features and bilinear blends them away. Going up to 16 samples helps both,
-			but the two settings are actually fixing different problems. Supersampling fixes
-			<i>edge and coverage</i> aliasing, while the pixel-sampling method fixes <i>texture
-			magnification</i> aliasing. The difference between nearest and bilinear is <b>biggest when the
-			texture is magnified</b> (one texel spanning many screen pixels) or when it has a lot of
-			high-frequency, high-contrast detail. In those cases nearest gives obvious blocks and abrupt jumps
-			while bilinear smooths across the four nearest texels. When the texture sits at roughly 1:1 scale
-			(about one texel per pixel) the two look almost the same.
+			clearest at 1 sample per pixel, where nearest shows hard blocky squares along high-contrast texture
+			features and bilinear blends them away. The two settings are actually fixing different problems, and
+			it is worth being precise about which is which. Under <b>magnification</b>, where one texel covers
+			many screen pixels, nearest acts like a box reconstruction filter over the texels, so each texel
+			shows up as a hard square. That is a <i>reconstruction</i> problem, not aliasing, and bilinear fixes
+			it with a smoother tent filter. Supersampling does little here, because all the sub-samples inside a
+			pixel tend to land in the same texel. Under <b>minification</b>, where one pixel covers many texels,
+			supersampling <i>does</i> help, because it averages several texel lookups per pixel, which is real
+			antialiasing. So the difference between nearest and bilinear is biggest under magnification or on
+			high-frequency detail, and when the texture sits at roughly 1:1 scale the two look almost the same.
 		</p>
 
 		<h2>Task 6: "Level Sampling" with mipmaps for texture mapping</h2>
@@ -317,8 +339,13 @@
 			From there I support three level-sampling modes. <code>L_ZERO</code> always samples the
 			full-resolution level 0, <code>L_NEAREST</code> rounds \(L\) to the nearest integer level, and
 			<code>L_LINEAR</code> samples the two levels that bracket \(L\) and blends them by the fractional
-			part of \(L\), which gives trilinear filtering when I pair it with bilinear pixel sampling. Each
-			level is itself sampled with whichever pixel method (nearest or bilinear) is selected.
+			part of \(L\), which gives trilinear filtering when I pair it with bilinear pixel sampling. Before
+			using \(L\) I clamp it to the range from 0 to the last mip level, so requests never fall off either
+			end of the pyramid. Each level is itself sampled with whichever pixel method (nearest or bilinear)
+			is selected. One limitation of this approach: taking the max of the two derivatives collapses the
+			footprint down to a single number, so when the footprint is stretched much more in one direction
+			than the other the chosen level is too coarse along the short axis and the texture over-blurs. That
+			directional case is exactly what anisotropic filtering is meant to fix.
 		</p>
 		<p>
 			<b>Tradeoffs (speed, memory, antialiasing).</b>
@@ -372,16 +399,38 @@
 			</table>
 		</div>
 		<p>
-			The four combinations above use my own PNG, which I wired in by copying one of the
-			<code>svg/texmap/</code> files and pointing it at my image. Going from L_ZERO to L_NEAREST clears up
-			the shimmering and aliasing in the minified regions (the far-away or steeply-angled parts) by
-			pulling from coarser, pre-averaged mip levels, and going from P_NEAREST to P_LINEAR smooths out the
-			blockiness within whatever level is being sampled.
+			I used <code>mine.png</code>, a photo of the Campanile at sunset, which I wired in by copying one of
+			the <code>svg/texmap/</code> files and pointing its texture at my image. I picked it because it is
+			full of thin, high-frequency detail (the city lights, the trees, and the fine vertical lines of the
+			tower) that aliases badly once it is shrunk down. This rasterizer is 2D with affine texture mapping,
+			so there is no perspective and nothing is literally "far away." The minification here comes from the
+			texture being large (about 1024 pixels wide) mapped into a much smaller region on screen, and all
+			four screenshots are zoomed out to that same minified scale so the mip levels actually come into
+			play. Walking through the four:
 		</p>
-		<p>
-			<b>Extra credit (extra filtering methods):</b> I did not implement any additional filtering methods
-			such as anisotropic filtering, so I have no further comparisons to show.
-		</p>
+		<ul>
+			<li>
+				<b>L_ZERO, P_NEAREST:</b> always reads the full-resolution texture and snaps to one texel, so the
+				minified detail sparkles and speckles. The lights and thin lines flicker into harsh, noisy dots
+				because a single texel is standing in for a whole cluster of them.
+			</li>
+			<li>
+				<b>L_ZERO, P_LINEAR:</b> still the full-resolution level, so it is only a little better. Bilinear
+				softens the individual texels but does nothing about minification, so the same aliasing is mostly
+				still there, just slightly smoother.
+			</li>
+			<li>
+				<b>L_NEAREST, P_NEAREST:</b> now the level selector jumps to a coarser, pre-averaged mip level,
+				and the sparkle largely disappears. The detail reads as a clean, averaged version of itself,
+				though because it is nearest-in-level you can occasionally catch a small step where the level
+				switches.
+			</li>
+			<li>
+				<b>L_NEAREST, P_LINEAR:</b> the smoothest of the four. It pulls from the coarser mip level and
+				then blends within it, so the minified texture looks clean with neither the sparkle of L_ZERO nor
+				the blockiness of nearest pixel sampling.
+			</li>
+		</ul>
 
 		</div>
 	</body>

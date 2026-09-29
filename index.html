@@ -49,90 +49,88 @@
 
 		Link to GitHub repository: <a href="https://github.com/cal-cs184-student/hw1-action-potential-writeup">https://github.com/cal-cs184-student/hw1-action-potential-writeup</a>
 
-		<!--
-		We've already added one heading per task, to make your write-up as navigable when grading. Please fit your write-up within these sections!
-		-->
-
 		<h2>Overview</h2>
 		<p>
-			In this homework we built a software rasterizer that turns vector (SVG) descriptions of 2D
-			geometry into pixels. We started from the most basic primitive &mdash; filling a single-color
-			triangle by testing point-in-triangle coverage inside a bounding box &mdash; and progressively
-			layered on the machinery that a real rendering pipeline needs: <b>supersampling</b> for
-			antialiasing, <b>hierarchical transforms</b> for composing shapes, <b>barycentric coordinates</b>
-			for interpolating per-vertex attributes, and finally <b>texture mapping</b> with both pixel-level
-			filtering (nearest / bilinear) and level-of-detail filtering via <b>mipmaps</b> (trilinear).
+			In this homework I built a software rasterizer that turns vector (SVG) descriptions of 2D
+			geometry into pixels. I started with the most basic primitive, filling a single-color triangle
+			by testing point-in-triangle coverage inside a bounding box, and then layered on the pieces a
+			real rendering pipeline needs: <b>supersampling</b> for antialiasing, <b>hierarchical
+			transforms</b> for composing shapes, <b>barycentric coordinates</b> for interpolating
+			per-vertex attributes, and finally <b>texture mapping</b> with both pixel-level filtering
+			(nearest and bilinear) and level-of-detail filtering using <b>mipmaps</b> (trilinear).
 		</p>
 		<p>
-			The recurring theme of the assignment is <i>sampling and antialiasing</i>: rendering is
-			fundamentally the problem of reconstructing a continuous signal (the ideal image) onto a discrete
-			grid of pixels, and everything from supersampling to mipmapping is a strategy for reducing the
-			aliasing that results from sampling a signal below its Nyquist rate. The most interesting takeaway
-			for us was seeing how the same underlying idea &mdash; averaging more information per pixel, whether
-			in screen space (supersampling) or in texture space (mipmaps) &mdash; shows up again and again, and
-			how each strategy trades off speed, memory, and antialiasing quality differently.
+			The thread running through the whole assignment is <i>sampling and antialiasing</i>. Rendering is
+			really the problem of reconstructing a continuous signal (the ideal image) onto a discrete grid
+			of pixels, and pretty much everything from supersampling to mipmapping is just a different way of
+			cutting down the aliasing you get when you sample a signal below its Nyquist rate. The thing I
+			found most interesting was how the same core idea, averaging more information per pixel, keeps
+			coming back in different forms. Sometimes I do that averaging in screen space (supersampling) and
+			sometimes in texture space (mipmaps), and each version trades off speed, memory, and antialiasing
+			quality in its own way.
 		</p>
 
 		<h2>Task 1: Drawing Single-Color Triangles</h2>
 		<p>
-			<b>How we rasterize a triangle.</b> Given the three screen-space vertices, we first compute the
+			<b>How I rasterize a triangle.</b> Given the three screen-space vertices, I first compute the
 			signed area of the triangle, \( \text{area} = (x_2-x_0)(y_1-y_0) - (y_2-y_0)(x_1-x_0) \). If the
-			area is zero the triangle is degenerate and we return immediately; if it is negative the vertices
-			are in clockwise order, so we swap two of them so that the winding is always consistent. This lets
-			us use a single sign convention for the inside test.
+			area is zero the triangle is degenerate and I just return. If it is negative the vertices are in
+			clockwise order, so I swap two of them to keep the winding consistent. That way I can use a
+			single sign convention for the inside test no matter how the triangle was specified.
 		</p>
 		<p>
-			We then compute the triangle's <b>bounding box</b> &mdash; the smallest axis-aligned rectangle that
-			contains all three vertices &mdash; by taking the min/max of the x and y coordinates, flooring/ceiling
-			to pixel boundaries, and clamping to the screen (\([0, \text{width}-1] \times [0, \text{height}-1]\))
-			so we never test off-screen pixels. We build three <code>Edge</code> objects, one per triangle side.
-			Each edge stores a point and a direction and evaluates the implicit line (half-plane) function
+			Next I compute the triangle's <b>bounding box</b>, meaning the smallest axis-aligned rectangle
+			that still contains all three vertices. I get it by taking the min and max of the x and y
+			coordinates, flooring and ceiling to pixel boundaries, and clamping to the screen
+			(\([0, \text{width}-1] \times [0, \text{height}-1]\)) so I never test off-screen pixels. Then I
+			build three <code>Edge</code> objects, one per triangle side. Each edge stores a point and a
+			direction and evaluates the implicit line (half-plane) function
 		</p>
 		\[ E(p) = \text{sign}\cdot\big((p_x - a_x)\, d_y - (p_y - a_y)\, d_x\big) \]
 		<p>
-			which returns a value whose sign tells us which side of the edge the point lies on. We iterate over
-			every pixel in the bounding box, evaluate the three edge functions at the pixel center
-			\((x+0.5, y+0.5)\), and color the pixel if it lies on the inside (non-negative) side of all three
-			edges simultaneously. To keep tie-handling consistent we canonicalize each edge's orientation in
-			<code>make_edge</code> (always ordering the endpoints and flipping a stored <code>sign</code>), which
-			avoids double-drawing or gaps along shared edges of adjacent triangles.
+			whose sign tells me which side of the edge a point is on. I loop over every pixel in the bounding
+			box, evaluate the three edge functions at the pixel center \((x+0.5, y+0.5)\), and fill the pixel
+			if it lands on the inside (non-negative) side of all three edges at once. To keep the tie cases
+			consistent I canonicalize each edge's orientation in <code>make_edge</code> by always ordering
+			the endpoints the same way and flipping a stored <code>sign</code>. This is what stops adjacent
+			triangles from either double-drawing or leaving gaps along a shared edge.
 		</p>
 		<p>
-			<b>Why this is no worse than the naive bounding-box approach.</b> The reference "naive" algorithm
-			checks every sample inside the bounding box and, for each, tests whether it is inside the triangle.
-			Our algorithm <i>is</i> exactly a bounding-box algorithm: we only ever visit samples inside the same
-			clamped bounding box, and for each sample we do a constant amount of work &mdash; three edge-function
-			evaluations, each a couple of multiplies and adds. We do not test any samples outside the bounding
-			box, and we precompute the edge coefficients once per triangle (in <code>make_edge</code>) rather
-			than recomputing them per sample. So our total cost is \(O(\text{bounding-box area})\) edge tests,
-			identical in asymptotic complexity to the naive scan and never doing <i>more</i> work than it.
+			<b>Why this is no worse than the naive bounding-box approach.</b> The naive version checks every
+			sample inside the bounding box and, for each one, tests whether it is inside the triangle. My
+			algorithm is really the same bounding-box approach: I only ever visit samples inside that same
+			clamped box, and for each sample I do a fixed amount of work, just three edge-function
+			evaluations that are each a couple of multiplies and adds. I never touch samples outside the box,
+			and I precompute the edge coefficients once per triangle in <code>make_edge</code> instead of
+			recomputing them at every sample. So the total cost is \(O(\text{bounding-box area})\) edge tests,
+			which is the same asymptotic cost as the naive scan and never more work than it.
 		</p>
 		<figure>
 			<img src="assets/task1_test4_inspector.png" alt="test4.svg with pixel inspector" style="width:70%"/>
 			<figcaption>
 				<code>basic/test4.svg</code> at default viewing parameters with the pixel inspector centered
-				on an interesting part of the scene (a triangle edge, where the jaggies of single-sample
-				coverage are visible).
+				on an interesting part of the scene (a triangle edge, where you can see the jaggies from
+				single-sample coverage).
 			</figcaption>
 		</figure>
 		<p>
-			<b>Extra credit (optimizations):</b> Beyond a straightforward clamped bounding-box scan with
-			precomputed edge coefficients, we did not implement additional optimizations (e.g. incremental edge
-			evaluation across a scanline, tiled/hierarchical traversal, or SIMD), so no timing table is included.
+			<b>Extra credit (optimizations):</b> Beyond the clamped bounding-box scan with precomputed edge
+			coefficients, I did not add any further optimizations (for example incremental edge evaluation
+			across a scanline, tiled or hierarchical traversal, or SIMD), so I have no timing table to show.
 		</p>
 
 		<h2>Task 2: Antialiasing by Supersampling</h2>
 		<p>
-			<b>Algorithm and data structures.</b> Supersampling reduces aliasing by taking more than one sample
-			per pixel and averaging the results. Our core data structure is a <code>sample_buffer</code> of size
-			\(\text{width} \times \text{height} \times \text{sample\_rate}\): instead of storing one color per
-			pixel, we store <code>sample_rate</code> colors per pixel. For a sample rate \(N\) we treat the pixel
-			as an \(\sqrt{N} \times \sqrt{N}\) grid (<code>sqrt_rate = round(sqrt(sample_rate))</code>) and place
+			<b>Algorithm and data structures.</b> Supersampling cuts down aliasing by taking more than one
+			sample per pixel and averaging them. The main data structure I use is a <code>sample_buffer</code>
+			of size \(\text{width} \times \text{height} \times \text{sample\_rate}\). Instead of one color per
+			pixel, I store <code>sample_rate</code> colors per pixel. For a sample rate \(N\) I treat the pixel
+			as an \(\sqrt{N} \times \sqrt{N}\) grid (<code>sqrt_rate = round(sqrt(sample_rate))</code>) and put
 			one sample at the center of each sub-cell, at offsets \(\big(\frac{s_x + 0.5}{\sqrt N},
-			\frac{s_y + 0.5}{\sqrt N}\big)\) within the pixel.
+			\frac{s_y + 0.5}{\sqrt N}\big)\) inside the pixel.
 		</p>
 		<p>
-			<b>Modifications to the pipeline.</b> Three changes were needed:
+			<b>Changes I made to the pipeline.</b> There were three:
 		</p>
 		<ul>
 			<li>
@@ -140,24 +138,24 @@
 				\(\text{width}\cdot\text{height}\cdot\text{sample\_rate}\) size whenever the rate changes.
 			</li>
 			<li>
-				The triangle rasterizer now loops over the \(\sqrt N \times \sqrt N\) sub-samples of every pixel
-				in the bounding box, runs the same three-edge inside test at each sub-sample position, and writes
-				the color into the corresponding slot of the sample buffer (rather than into the framebuffer
-				directly). Points and lines simply fill all sub-samples of a pixel with the same color.
+				The triangle rasterizer now loops over the \(\sqrt N \times \sqrt N\) sub-samples of each pixel
+				in the bounding box, runs the same three-edge inside test at each sub-sample position, and
+				writes the color into the matching slot of the sample buffer instead of straight into the
+				framebuffer. Points and lines just fill all sub-samples of a pixel with the same color.
 			</li>
 			<li>
-				<code>resolve_to_framebuffer</code> is the new "downsampling" step: after all primitives are drawn,
-				it averages the \(N\) sub-sample colors of each pixel (a box filter) and writes the averaged,
+				<code>resolve_to_framebuffer</code> is the new downsampling step. After everything is drawn, it
+				averages the \(N\) sub-sample colors of each pixel (a box filter) and writes that averaged,
 				clamped color into the final RGB framebuffer.
 			</li>
 		</ul>
 		<p>
-			<b>Why supersampling antialiases.</b> A single sample per pixel makes a hard, binary decision about
-			whether the whole pixel is inside or outside the triangle, which produces stair-stepped ("jaggy")
-			edges. By taking many sub-samples and averaging, a pixel that is only partially covered by the
-			triangle gets a color that is a blend of the triangle color and the background in proportion to its
-			coverage. This approximates the true area coverage of the pixel, so edges become smooth gradients
-			instead of hard steps.
+			<b>Why supersampling antialiases.</b> With a single sample per pixel the rasterizer makes a hard
+			yes-or-no call about whether the whole pixel is inside the triangle, and that is what gives you the
+			stair-stepped, jaggy edges. When I take many sub-samples and average them, a pixel that is only
+			partly covered ends up as a blend of the triangle color and the background, weighted by how much
+			of it is actually covered. That approximates the real area coverage of the pixel, so edges turn
+			into smooth gradients instead of hard steps.
 		</p>
 		<div style="display: flex; flex-direction: column; align-items: center;">
 			<table style="width: 100%; text-align: center; border-collapse: collapse;">
@@ -178,92 +176,93 @@
 			</table>
 		</div>
 		<p>
-			<b>Why these results are observed.</b> All three images show <code>basic/test4.svg</code> at default
-			parameters with the pixel inspector over a very skinny triangle corner. At sample rate 1 the thin
-			corner breaks up into isolated, fully-on or fully-off pixels &mdash; where the triangle is narrower
-			than a pixel it either grabs the whole pixel or misses it entirely, so the tip looks broken and
-			aliased. As the sample rate increases to 4 and then 16, the partially-covered pixels along the corner
-			take on intermediate shades proportional to how much of each pixel the sliver actually covers, so the
-			corner becomes a smooth, continuous taper. More sub-samples means a finer estimate of coverage and
-			therefore smoother antialiasing, at the cost of more computation and memory.
+			<b>Why these results look the way they do.</b> All three images show <code>basic/test4.svg</code>
+			at default parameters with the pixel inspector over a very skinny triangle corner. At sample rate 1
+			the thin corner falls apart into isolated fully-on or fully-off pixels. Where the triangle is
+			narrower than a pixel it either grabs the whole pixel or misses it, so the tip looks broken and
+			aliased. As I bump the rate up to 4 and then 16, the partly-covered pixels along the corner take on
+			in-between shades based on how much of the pixel the sliver really covers, and the corner smooths
+			out into a clean taper. More sub-samples just means a finer estimate of coverage and smoother
+			antialiasing, and I pay for it with more computation and memory.
 		</p>
 		<p>
-			<b>Extra credit (alternative antialiasing):</b> We used grid-based (uniform) supersampling only, so
-			there are no alternative-method comparisons to report.
+			<b>Extra credit (alternative antialiasing):</b> I only used grid-based (uniform) supersampling, so
+			I do not have any alternative methods to compare against.
 		</p>
 
 		<h2>Task 3: Transforms</h2>
 		<p>
-			SVG groups (<code>&lt;g&gt;</code>) apply transforms <b>hierarchically</b>: each group's transform is
-			composed with its parent's, so children inherit and accumulate the transformations above them in the
-			tree. For <code>my_robot.svg</code> we made cubeman <b>wave hello</b>. Starting from the provided
-			<code>robot.svg</code>, we wrapped the entire right-arm group in a <code>rotate(-75)</code> about the
-			shoulder joint so the upper arm swings up and out, then added a further <code>rotate(30)</code> at the
-			elbow so the forearm cocks to the side &mdash; the classic "waving hand" silhouette. To add a little
-			life we also gave the right leg a small <code>rotate(15)</code> as if he is mid-step, recolored the
-			torso and legs blue, and turned the head yellow while keeping the arms red for contrast. Each of these
-			effects is achieved purely by inserting nested <code>&lt;g transform="..."&gt;</code> elements
-			(translate/rotate/scale) around the existing polygon definitions, relying on the hierarchical
-			composition of transforms so that rotating a parent group rotates the whole limb rigidly.
+			SVG groups (<code>&lt;g&gt;</code>) apply transforms <b>hierarchically</b>, so each group's
+			transform is composed with its parent's and children pick up everything above them in the tree.
+			For <code>my_robot.svg</code> I made cubeman <b>wave hello</b>. Starting from the provided
+			<code>robot.svg</code>, I wrapped the whole right-arm group in a <code>rotate(-75)</code> around the
+			shoulder so the upper arm swings up and out, then added a <code>rotate(30)</code> at the elbow so
+			the forearm cocks to the side, which gives you that classic waving-hand shape. To make him feel a
+			bit more alive I also gave the right leg a small <code>rotate(15)</code> like he is mid-step,
+			recolored the torso and legs blue, and turned the head yellow while leaving the arms red for
+			contrast. All of these came from inserting nested <code>&lt;g transform="..."&gt;</code> elements
+			(translate, rotate, scale) around the existing polygons and letting the hierarchical composition do
+			the work, so rotating a parent group rotates the whole limb as one rigid piece.
 		</p>
 		<figure>
 			<img src="assets/task3_my_robot.png" alt="my_robot.svg rendered" style="width:55%"/>
-			<figcaption>Our <code>my_robot.svg</code>: cubeman waving, with a raised, bent right arm and a stepping leg.</figcaption>
+			<figcaption>My <code>my_robot.svg</code>: cubeman waving, with a raised, bent right arm and a stepping leg.</figcaption>
 		</figure>
 
 		<h2>Task 4: Barycentric coordinates</h2>
 		<p>
-			<b>Barycentric coordinates</b> express any point inside a triangle as a weighted average of the
-			triangle's three vertices. For vertices \(V_0, V_1, V_2\) and weights \(\alpha, \beta, \gamma\) with
-			\(\alpha + \beta + \gamma = 1\), the point is \(P = \alpha V_0 + \beta V_1 + \gamma V_2\). Intuitively
-			each weight measures "how much" of the corresponding vertex the point is: \(\alpha = 1\) at \(V_0\)
-			and falls linearly to \(0\) along the opposite edge, and similarly for \(\beta\) and \(\gamma\).
-			Equivalently, each weight is the ratio of the sub-triangle area opposite that vertex to the total
-			area. Because they sum to one and vary linearly across the triangle, barycentric coordinates are the
-			natural way to <b>interpolate any per-vertex attribute</b> &mdash; here, color.
+			<b>Barycentric coordinates</b> let me write any point inside a triangle as a weighted average of
+			the triangle's three vertices. For vertices \(V_0, V_1, V_2\) and weights \(\alpha, \beta, \gamma\)
+			with \(\alpha + \beta + \gamma = 1\), the point is \(P = \alpha V_0 + \beta V_1 + \gamma V_2\). The
+			intuition I like is that each weight measures how much of the corresponding vertex a point is:
+			\(\alpha = 1\) at \(V_0\) and drops linearly to \(0\) along the opposite edge, and the same holds
+			for \(\beta\) and \(\gamma\). You can also read each weight as the area of the sub-triangle
+			opposite that vertex divided by the total area. Because they sum to one and change linearly across
+			the triangle, they are the natural tool for <b>interpolating any per-vertex attribute</b>, which
+			here is color.
 		</p>
 		<p>
-			We compute them with the standard formula using a shared denominator
+			I compute them with the standard formula using a shared denominator
 			\( d = (y_1-y_2)(x_0-x_2) + (x_2-x_1)(y_0-y_2) \):
 		</p>
 		\[ \alpha = \frac{(y_1-y_2)(p_x-x_2) + (x_2-x_1)(p_y-y_2)}{d}, \quad
 		   \beta  = \frac{(y_2-y_0)(p_x-x_2) + (x_0-x_2)(p_y-y_2)}{d}, \quad
 		   \gamma = 1 - \alpha - \beta \]
 		<p>
-			At each covered sample we then blend the vertex colors as
-			\( C = \alpha C_0 + \beta C_1 + \gamma C_2 \). If the three vertices are pure red, green, and blue,
-			this produces a smoothly blended color triangle: near each vertex the color is dominated by that
-			vertex's hue, and it transitions continuously across the interior.
+			At each covered sample I then blend the vertex colors as
+			\( C = \alpha C_0 + \beta C_1 + \gamma C_2 \). When the three vertices are pure red, green, and
+			blue, this gives a smoothly blended color triangle where the color near each vertex is dominated by
+			that vertex's hue and transitions continuously through the middle.
 		</p>
 		<figure>
 			<img src="assets/task4_test7.png" alt="test7.svg color wheel" style="width:60%"/>
-			<figcaption><code>svg/basic/test7.svg</code> at default viewing parameters, sample rate 1 &mdash; smoothly interpolated colors via barycentric coordinates.</figcaption>
+			<figcaption><code>svg/basic/test7.svg</code> at default viewing parameters, sample rate 1, showing colors interpolated with barycentric coordinates.</figcaption>
 		</figure>
 
 		<h2>Task 5: "Pixel sampling" for texture mapping</h2>
 		<p>
-			<b>Pixel sampling</b> is the step that, for each screen sample covered by a textured triangle, decides
-			which texture color (texel) to use. We implemented it in <code>rasterize_textured_triangle</code>:
-			for every covered sub-sample we use the same barycentric coordinates as in Task 4, but this time we
-			interpolate the per-vertex <b>texture coordinates</b> \((u, v)\) instead of colors. We then hand that
-			\((u,v)\) &mdash; packaged in a <code>SampleParams</code> struct along with the \((u,v)\) of the
-			neighboring screen pixels (used later for level sampling) &mdash; to the texture's sampling routine,
-			which returns a color.
+			<b>Pixel sampling</b> is the step that decides, for each screen sample covered by a textured
+			triangle, which texture color (texel) to use. I implemented it in
+			<code>rasterize_textured_triangle</code>. For every covered sub-sample I use the same barycentric
+			coordinates from Task 4, except this time I interpolate the per-vertex <b>texture coordinates</b>
+			\((u, v)\) rather than colors. I pack that \((u,v)\) into a <code>SampleParams</code> struct, along
+			with the \((u,v)\) of the neighboring screen pixels that I need later for level sampling, and hand
+			it to the texture's sampling routine to get a color back.
 		</p>
 		<p>
 			<b>Nearest vs. bilinear.</b> These are two ways to turn a continuous \((u,v)\) into a color:
 		</p>
 		<ul>
 			<li>
-				<b>Nearest</b> (<code>sample_nearest</code>): round \((u,v)\) to the single closest texel and return
-				its color. Fast, but blocky &mdash; adjacent screen pixels can snap to the same texel or jump
-				abruptly to the next one.
+				<b>Nearest</b> (<code>sample_nearest</code>): round \((u,v)\) to the single closest texel and
+				return its color. It is fast but blocky, since neighboring screen pixels can snap to the same
+				texel or jump abruptly to the next one.
 			</li>
 			<li>
-				<b>Bilinear</b> (<code>sample_bilinear</code>): take the four texels surrounding \((u,v)\) and
-				linearly interpolate them using the fractional offsets \(s, t\) &mdash; first two horizontal lerps
-				between the left/right texels, then one vertical lerp between those results. This produces a smooth
-				blend rather than a hard jump.
+				<b>Bilinear</b> (<code>sample_bilinear</code>): take the four texels around \((u,v)\) and blend
+				them with the fractional offsets \(s, t\). I do two horizontal lerps between the left and right
+				texels, then one vertical lerp between those results, which gives a smooth blend instead of a
+				hard jump.
 			</li>
 		</ul>
 		<div style="display: flex; flex-direction: column; align-items: center;">
@@ -291,60 +290,62 @@
 			</table>
 		</div>
 		<p>
-			<b>Relative differences.</b> Bilinear sampling is noticeably smoother than nearest, especially at 1
-			sample per pixel where nearest shows hard blocky edges and stair-steps along high-contrast texture
-			features while bilinear blends them. Increasing the sample rate to 16 improves both, but the two
-			techniques address different problems: supersampling fixes <i>edge/coverage</i> aliasing, while the
-			pixel-sampling method fixes <i>texture magnification</i> aliasing. The difference between nearest and
-			bilinear is <b>largest when the texture is magnified</b> (a texel spans many screen pixels) or contains
-			high-frequency, high-contrast detail: there, nearest produces obvious blocks and abrupt jumps, whereas
-			bilinear smooths across the four nearest texels. When the texture is roughly at 1:1 scale (one texel
-			per pixel) the two methods look nearly identical.
+			<b>Relative differences.</b> Bilinear comes out visibly smoother than nearest, and the gap is
+			clearest at 1 sample per pixel, where nearest shows hard blocky edges and stair-steps along
+			high-contrast texture features and bilinear blends them away. Going up to 16 samples helps both,
+			but the two settings are actually fixing different problems. Supersampling fixes
+			<i>edge and coverage</i> aliasing, while the pixel-sampling method fixes <i>texture
+			magnification</i> aliasing. The difference between nearest and bilinear is <b>biggest when the
+			texture is magnified</b> (one texel spanning many screen pixels) or when it has a lot of
+			high-frequency, high-contrast detail. In those cases nearest gives obvious blocks and abrupt jumps
+			while bilinear smooths across the four nearest texels. When the texture sits at roughly 1:1 scale
+			(about one texel per pixel) the two look almost the same.
 		</p>
 
 		<h2>Task 6: "Level Sampling" with mipmaps for texture mapping</h2>
 		<p>
-			<b>Level sampling</b> chooses <i>which mipmap level</i> to read from, to combat texture
-			<b>minification</b> aliasing (when a single screen pixel covers many texels). A mipmap is a pyramid of
-			pre-filtered, successively half-sized copies of the texture; reading from a coarser level is
-			equivalent to averaging many texels at once, which is exactly what an undersampled pixel needs. To
-			pick the level we estimate how fast texture coordinates change per screen pixel: in
-			<code>get_level</code> we take the \((u,v)\) differences to the neighboring screen pixels in x and y,
-			scale them by the texture dimensions to get the footprint in <b>texels</b>, and compute
+			<b>Level sampling</b> picks <i>which mipmap level</i> to read from, and it is aimed at texture
+			<b>minification</b> aliasing, the case where a single screen pixel covers many texels. A mipmap is
+			a pyramid of pre-filtered, successively half-sized copies of the texture, so reading from a coarser
+			level is basically averaging a lot of texels at once, which is exactly what an undersampled pixel
+			wants. To choose the level I estimate how fast the texture coordinates change per screen pixel. In
+			<code>get_level</code> I take the \((u,v)\) differences to the neighboring screen pixels in x and
+			y, scale them by the texture dimensions to get the footprint in <b>texels</b>, and compute
 		</p>
 		\[ L = \log_2\Big(\max\big(\lVert \tfrac{\partial (u,v)}{\partial x}\rVert,\ \lVert \tfrac{\partial (u,v)}{\partial y}\rVert\big)\Big) \]
 		<p>
-			We then support three level-sampling modes: <code>L_ZERO</code> always samples the full-resolution
-			level 0; <code>L_NEAREST</code> rounds \(L\) to the nearest integer level; and <code>L_LINEAR</code>
-			samples the two bracketing levels and linearly blends them by the fractional part of \(L\)
-			(trilinear filtering when combined with bilinear pixel sampling). Each level is itself sampled with
-			the chosen pixel method (nearest or bilinear).
+			From there I support three level-sampling modes. <code>L_ZERO</code> always samples the
+			full-resolution level 0, <code>L_NEAREST</code> rounds \(L\) to the nearest integer level, and
+			<code>L_LINEAR</code> samples the two levels that bracket \(L\) and blends them by the fractional
+			part of \(L\), which gives trilinear filtering when I pair it with bilinear pixel sampling. Each
+			level is itself sampled with whichever pixel method (nearest or bilinear) is selected.
 		</p>
 		<p>
-			<b>Tradeoffs (speed / memory / antialiasing).</b>
+			<b>Tradeoffs (speed, memory, antialiasing).</b>
 		</p>
 		<ul>
 			<li>
-				<b>Increasing samples per pixel (supersampling):</b> the strongest and most general antialiasing
-				(fixes both edges and textures), but the most expensive &mdash; cost and sample-buffer memory grow
-				<i>linearly</i> with the sample rate.
+				<b>More samples per pixel (supersampling):</b> the strongest and most general antialiasing,
+				since it fixes both edges and textures, but also the most expensive. Both the cost and the
+				sample-buffer memory grow <i>linearly</i> with the sample rate.
 			</li>
 			<li>
-				<b>Pixel sampling (nearest &rarr; bilinear):</b> bilinear costs ~4&times; the texel fetches of
-				nearest and adds smoothing under magnification, but does nothing for minification aliasing; memory
-				overhead is negligible.
+				<b>Pixel sampling (nearest to bilinear):</b> bilinear costs roughly 4&times; the texel fetches of
+				nearest and adds smoothing under magnification, but it does nothing for minification aliasing.
+				The memory overhead is basically nothing.
 			</li>
 			<li>
-				<b>Level sampling (mipmaps):</b> very cheap antialiasing for minification &mdash; roughly constant
-				work per sample regardless of how much the texture is minified &mdash; at the cost of ~33% extra
-				texture memory to store the mip pyramid. <code>L_LINEAR</code> costs about twice <code>L_NEAREST</code>
-				(two level lookups) but removes the visible "seams" where the level switches.
+				<b>Level sampling (mipmaps):</b> very cheap antialiasing for minification, since it is roughly
+				constant work per sample no matter how much the texture shrinks, and it costs about 33% extra
+				texture memory to store the pyramid. <code>L_LINEAR</code> is about twice the cost of
+				<code>L_NEAREST</code> because it does two level lookups, but it hides the visible seams where the
+				level would otherwise pop from one to the next.
 			</li>
 		</ul>
 		<p>
-			In short: supersampling buys antialiasing power with time and memory; mipmaps buy cheap minification
-			antialiasing with a fixed memory overhead; bilinear buys magnification smoothness for a small,
-			constant cost.
+			So the short version is: supersampling buys antialiasing power with time and memory, mipmaps buy
+			cheap minification antialiasing for a fixed memory overhead, and bilinear buys magnification
+			smoothness for a small, constant cost.
 		</p>
 		<div style="display: flex; flex-direction: column; align-items: center;">
 			<table style="width: 100%; text-align: center; border-collapse: collapse;">
@@ -371,14 +372,15 @@
 			</table>
 		</div>
 		<p>
-			The four combinations above use our own PNG (wired into a copy of one of the <code>svg/texmap/</code>
-			files). Moving from L_ZERO to L_NEAREST removes the shimmering/aliasing in minified (far-away or
-			steeply-angled) regions by pulling from coarser, pre-averaged mip levels, while moving from P_NEAREST
-			to P_LINEAR smooths the blockiness within whichever level is sampled.
+			The four combinations above use my own PNG, which I wired in by copying one of the
+			<code>svg/texmap/</code> files and pointing it at my image. Going from L_ZERO to L_NEAREST clears up
+			the shimmering and aliasing in the minified regions (the far-away or steeply-angled parts) by
+			pulling from coarser, pre-averaged mip levels, and going from P_NEAREST to P_LINEAR smooths out the
+			blockiness within whatever level is being sampled.
 		</p>
 		<p>
-			<b>Extra credit (extra filtering methods):</b> We did not implement additional filtering methods
-			(e.g. anisotropic filtering), so there are no further comparisons to report.
+			<b>Extra credit (extra filtering methods):</b> I did not implement any additional filtering methods
+			such as anisotropic filtering, so I have no further comparisons to show.
 		</p>
 
 		</div>
